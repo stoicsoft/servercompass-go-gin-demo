@@ -117,7 +117,7 @@ const indexTemplate = `<!DOCTYPE html>
 <body>
     <header>
         <h1>{{ .title }}</h1>
-        <p>Only public variables are shown here. Private server values stay on the backend.</p>
+        <p>Only public variables are shown here - test update. Private server values stay on the backend. - test new branch</p>
     </header>
     <main>
         <section>
