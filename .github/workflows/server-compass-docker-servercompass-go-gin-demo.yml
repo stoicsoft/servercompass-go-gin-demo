@@ -41,10 +41,9 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
+          file: Dockerfile
           push: true
           tags: ${{ steps.meta.outputs.tags }}
-          build-args: |
-            NODE_ENV=production
 
   deploy:
     needs: build
@@ -128,24 +127,22 @@ jobs:
 
             # Always create/overwrite docker-compose.yml to ensure it uses the image from GHCR
             echo "📝 Creating docker-compose.yml..."
-            cat > docker-compose.yml << 'COMPOSE_EOF'
-services:
-  servercompass-go-gin-demo:
-    image: ghcr.io/${{ github.repository }}:latest
-    container_name: servercompass-go-gin-demo-app
-    ports:
-      - "3000:3000"
-    env_file:
-      - .env
-    restart: unless-stopped
-COMPOSE_EOF
+            printf '%s\n' \
+              'services:' \
+              '  servercompass-go-gin-demo:' \
+              '    image: ghcr.io/${{ github.repository }}:latest' \
+              '    container_name: servercompass-go-gin-demo-app' \
+              '    ports:' \
+              '      - "3000:3000"' \
+              '    env_file:' \
+              '      - .env' \
+              '    restart: unless-stopped' \
+              > docker-compose.yml
 
             # Create .env (prefer Server Compass-managed secret; fallback to empty file)
             if [ -n "${{ secrets.ENV_FILE_SERVERCOMPASS_GO_GIN_DEMO }}" ]; then
               echo "🧩 Writing .env from GitHub secret (ENV_FILE_SERVERCOMPASS_GO_GIN_DEMO)..."
-              cat > .env << 'ENV_EOF'
-${{ secrets.ENV_FILE_SERVERCOMPASS_GO_GIN_DEMO }}
-ENV_EOF
+              printf '%s\n' "${{ secrets.ENV_FILE_SERVERCOMPASS_GO_GIN_DEMO }}" > .env
             else
               echo "🧩 No env secret found. Creating empty .env..."
               touch .env

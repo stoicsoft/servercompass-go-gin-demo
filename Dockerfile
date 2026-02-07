@@ -1,16 +1,14 @@
-FROM node:20-alpine AS deps
+# Go Application Dockerfile
+FROM golang:1.21-alpine AS builder
 WORKDIR /app
-COPY package.json package-lock.json* yarn.lock* pnpm-lock.yaml* ./
-RUN if [ -f yarn.lock ]; then yarn install --frozen-lockfile; \
-  elif [ -f package-lock.json ]; then npm ci; \
-  elif [ -f pnpm-lock.yaml ]; then corepack enable pnpm && pnpm i --frozen-lockfile; \
-  else echo "Lockfile not found." && npm install; \
-  fi
-
-FROM node:20-alpine
-WORKDIR /app
-ENV NODE_ENV=production
-COPY --from=deps /app/node_modules ./node_modules
+COPY go.mod go.sum ./
+RUN go mod download
 COPY . .
+RUN CGO_ENABLED=0 go build -o main .
+
+FROM alpine:latest
+RUN apk --no-cache add ca-certificates
+WORKDIR /app
+COPY --from=builder /app/main .
 EXPOSE 3000
-CMD ["npm", "start"]
+CMD ["./main"]
