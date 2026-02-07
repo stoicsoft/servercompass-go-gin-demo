@@ -3,11 +3,6 @@ name: Docker Deploy - servercompass-go-gin-demo
 on:
   push:
     branches: [main]
-    paths-ignore:
-      - '.github/workflows/server-compass-docker-servercompass-go-gin-demo.yml'
-      - 'Dockerfile'
-      - 'docker-compose.yml'
-      - '.dockerignore'
   workflow_dispatch:
 
 env:
