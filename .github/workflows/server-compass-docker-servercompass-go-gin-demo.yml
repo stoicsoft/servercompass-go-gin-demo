@@ -140,7 +140,9 @@ jobs:
               '    image: ghcr.io/${{ github.repository }}:latest' \
               '    container_name: servercompass-go-gin-demo-app' \
               '    ports:' \
-              '      - "3000:3000"' \
+              '      - "3002:3002"' \
+              '    environment:' \
+              '      PORT: "${PORT:-3002}"' \
               '    env_file:' \
               '      - .env' \
               '    restart: unless-stopped' \

@@ -15,11 +15,11 @@ ENV CGO_ENABLED=$CGO_ENABLED NIXPACKS_METADATA=$NIXPACKS_METADATA
 
 # install phase
 COPY . /app/.
-RUN --mount=type=cache,id=ElV2I6ikJck-/root/cache/go-build,target=/root/.cache/go-build go mod download
+RUN --mount=type=cache,id=vyRwYZonvJA-/root/cache/go-build,target=/root/.cache/go-build go mod download
 
 # build phase
 COPY . /app/.
-RUN --mount=type=cache,id=ElV2I6ikJck-/root/cache/go-build,target=/root/.cache/go-build go build -o out
+RUN --mount=type=cache,id=vyRwYZonvJA-/root/cache/go-build,target=/root/.cache/go-build go build -o out
 
 
 
