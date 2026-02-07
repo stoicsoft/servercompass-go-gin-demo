@@ -47,7 +47,7 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: Dockerfile.servercompass
+          file: Dockerfile
           push: true
           tags: ${{ steps.meta.outputs.tags }}
 
@@ -140,20 +140,22 @@ jobs:
               '    image: ghcr.io/${{ github.repository }}:latest' \
               '    container_name: servercompass-go-gin-demo-app' \
               '    ports:' \
-              '      - "3002:3002"' \
+              '      - "3003:3000"' \
               '    environment:' \
-              '      PORT: "${PORT:-3002}"' \
+              '      PORT: "${PORT:-3000}"' \
               '    env_file:' \
               '      - .env' \
               '    restart: unless-stopped' \
               > docker-compose.yml
 
-            # Create .env (prefer Server Compass-managed secret; fallback to empty file)
+            # Create .env (prefer Server Compass-managed secret; fallback to existing server file)
             if [ -n "${{ secrets.ENV_FILE_SERVERCOMPASS_GO_GIN_DEMO }}" ]; then
               echo "🧩 Writing .env from GitHub secret (ENV_FILE_SERVERCOMPASS_GO_GIN_DEMO)..."
               printf '%s\n' "${{ secrets.ENV_FILE_SERVERCOMPASS_GO_GIN_DEMO }}" > .env
+            elif [ -f .env ]; then
+              echo "🧩 No env secret found. Keeping existing .env from server."
             else
-              echo "🧩 No env secret found. Creating empty .env..."
+              echo "🧩 No env secret found and .env is missing. Creating empty .env..."
               touch .env
             fi
 
