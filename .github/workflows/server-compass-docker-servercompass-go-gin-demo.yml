@@ -140,8 +140,16 @@ services:
     restart: unless-stopped
 COMPOSE_EOF
 
-            # Create .env file if it doesn't exist
-            touch .env
+            # Create .env (prefer Server Compass-managed secret; fallback to empty file)
+            if [ -n "${{ secrets.ENV_FILE_SERVERCOMPASS_GO_GIN_DEMO }}" ]; then
+              echo "🧩 Writing .env from GitHub secret (ENV_FILE_SERVERCOMPASS_GO_GIN_DEMO)..."
+              cat > .env << 'ENV_EOF'
+${{ secrets.ENV_FILE_SERVERCOMPASS_GO_GIN_DEMO }}
+ENV_EOF
+            else
+              echo "🧩 No env secret found. Creating empty .env..."
+              touch .env
+            fi
 
             # Log in to GHCR
             echo "🔐 Logging in to GitHub Container Registry..."
