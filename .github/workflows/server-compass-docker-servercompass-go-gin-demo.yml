@@ -4,6 +4,11 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      deploy_only:
+        description: 'Skip build job and run deploy only (use latest GHCR image)'
+        required: false
+        default: 'false'
 
 env:
   REGISTRY: ghcr.io
@@ -11,6 +16,7 @@ env:
 
 jobs:
   build:
+    if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.deploy_only != 'true' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -41,12 +47,13 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: Dockerfile
+          file: Dockerfile.servercompass
           push: true
           tags: ${{ steps.meta.outputs.tags }}
 
   deploy:
     needs: build
+    if: ${{ always() && (needs.build.result == 'success' || needs.build.result == 'skipped') }}
     runs-on: ubuntu-latest
     steps:
       - name: Deploy to VPS
