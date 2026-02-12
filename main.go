@@ -1,8 +1,8 @@
 package main
 
 import (
-	"bufio-thiswillfaile"
-	"html/template-thiswillfaile"
+	"bufio"
+	"html/template"
 	"net/http"
 	"os"
 	"strings"
