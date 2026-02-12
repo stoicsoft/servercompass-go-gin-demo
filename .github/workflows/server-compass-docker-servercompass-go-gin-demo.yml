@@ -138,21 +138,64 @@ jobs:
             mkdir -p /root/server-compass/apps/servercompass-go-gin-demo
             cd /root/server-compass/apps/servercompass-go-gin-demo
 
-            # Always create/overwrite docker-compose.yml to ensure it uses the image from GHCR
+            # Preserve existing Traefik labels and networks before regenerating docker-compose.yml
+            # This ensures domain configurations added via ServerCompass UI are not lost on redeploy
+            EXISTING_LABELS=""
+            EXISTING_NETWORKS=""
+            if [ -f docker-compose.yml ]; then
+              echo "📋 Preserving existing Traefik configuration..."
+              # Extract labels section (everything between 'labels:' and next top-level key or end of service)
+              # Pattern handles both quoted and unquoted labels: `- traefik.` or `- "traefik.`
+              EXISTING_LABELS=$(awk '
+                /^[[:space:]]+labels:/ { in_labels=1; next }
+                in_labels && /^[[:space:]]+-[[:space:]]+"?traefik\./ { print; next }
+                in_labels && /^[[:space:]]+[a-z]/ { in_labels=0 }
+              ' docker-compose.yml)
+
+              # Extract networks section for the service (traefik-public reference)
+              if grep -q "traefik-public" docker-compose.yml; then
+                EXISTING_NETWORKS="yes"
+                echo "  ✓ Found traefik-public network configuration"
+              fi
+
+              if [ -n "$EXISTING_LABELS" ]; then
+                echo "  ✓ Found $(echo "$EXISTING_LABELS" | wc -l | tr -d ' ') Traefik labels to preserve"
+              fi
+            fi
+
+            # Generate docker-compose.yml with preserved Traefik configuration
             echo "📝 Creating docker-compose.yml..."
-            printf '%s\n' \
-              'services:' \
-              '  servercompass-go-gin-demo:' \
-              '    image: ghcr.io/${{ github.repository }}:latest' \
-              '    container_name: servercompass-go-gin-demo-app' \
-              '    ports:' \
-              '      - "3000:3000"' \
-              '    environment:' \
-              '      PORT: "${PORT:-3000}"' \
-              '    env_file:' \
-              '      - .env' \
-              '    restart: unless-stopped' \
-              > docker-compose.yml
+            {
+              printf '%s\n' \
+                'services:' \
+                '  servercompass-go-gin-demo:' \
+                '    image: ghcr.io/${{ github.repository }}:latest' \
+                '    container_name: servercompass-go-gin-demo-app' \
+                '    ports:' \
+                '      - "3000:3000"' \
+                '    environment:' \
+                '      PORT: "${PORT:-3000}"' \
+                '    env_file:' \
+                '      - .env' \
+                '    restart: unless-stopped'
+
+              # Re-add preserved Traefik labels
+              if [ -n "$EXISTING_LABELS" ]; then
+                echo "    labels:"
+                echo "$EXISTING_LABELS"
+              fi
+
+              # Re-add networks if traefik-public was configured
+              if [ "$EXISTING_NETWORKS" = "yes" ]; then
+                printf '%s\n' \
+                  '    networks:' \
+                  '      - default' \
+                  '      - traefik-public' \
+                  'networks:' \
+                  '  traefik-public:' \
+                  '    external: true'
+              fi
+            } > docker-compose.yml
 
             # Create .env (prefer Server Compass-managed secret; fallback to existing server file)
             if [ -n "${{ secrets.ENV_FILE_SERVERCOMPASS_GO_GIN_DEMO }}" ]; then
