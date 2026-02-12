@@ -222,13 +222,191 @@ jobs:
             echo "📥 Pulling latest Docker images..."
             docker compose pull
 
-            # Stop and remove old containers
-            echo "🛑 Stopping old containers..."
-            docker compose down
+            # Check if zero-downtime deployment is possible (Traefik labels configured)
+            HAS_TRAEFIK_LABELS="no"
+            if [ -n "$EXISTING_LABELS" ] && [ "$EXISTING_NETWORKS" = "yes" ]; then
+              HAS_TRAEFIK_LABELS="yes"
+              echo "🔄 Zero-downtime deployment enabled (Traefik labels detected)"
+            fi
 
-            # Start new containers
-            echo "🚀 Starting new containers..."
-            docker compose up -d
+            if [ "$HAS_TRAEFIK_LABELS" = "yes" ]; then
+              # ========================================
+              # ZERO-DOWNTIME BLUE-GREEN DEPLOYMENT
+              # ========================================
+              echo "🔵🟢 Starting zero-downtime blue-green deployment..."
+
+              PRIMARY_PROJECT="servercompass-go-gin-demo"
+              STAGING_PROJECT="servercompass-go-gin-demo-staging"
+              STAGING_DIR="/root/server-compass/apps/servercompass-go-gin-demo-staging"
+              PRIMARY_CONTAINER="${PRIMARY_PROJECT}-servercompass-go-gin-demo-1"
+              STAGING_CONTAINER="${STAGING_PROJECT}-servercompass-go-gin-demo-1"
+              APP_PORT="3000"
+
+              # Step 1: Clean up any orphaned staging from previous failed deploy
+              echo "🧹 Cleaning up orphaned staging..."
+              if [ -d "$STAGING_DIR" ]; then
+                cd "$STAGING_DIR" && docker compose -p "$STAGING_PROJECT" down --remove-orphans 2>/dev/null || true
+                rm -rf "$STAGING_DIR"
+              fi
+              cd /root/server-compass/apps/servercompass-go-gin-demo
+
+              # Step 2: Create staging directory with same compose file
+              echo "📁 Preparing staging environment..."
+              mkdir -p "$STAGING_DIR"
+              cp docker-compose.yml "$STAGING_DIR/"
+              cp .env "$STAGING_DIR/" 2>/dev/null || touch "$STAGING_DIR/.env"
+
+              # Step 3: Modify staging compose to use different container name
+              sed -i "s/container_name: servercompass-go-gin-demo-app/container_name: servercompass-go-gin-demo-staging-app/" "$STAGING_DIR/docker-compose.yml"
+
+              # Step 4: Start staging containers (PRIMARY STILL SERVING TRAFFIC)
+              echo "🚀 Starting staging containers while primary serves traffic..."
+              cd "$STAGING_DIR"
+              docker compose -p "$STAGING_PROJECT" up -d
+
+              # Step 5: Wait for staging to be ready (TCP port probe)
+              echo "⏳ Waiting for staging container to be ready (port $APP_PORT)..."
+              STAGING_READY="no"
+              for i in $(seq 1 30); do
+                # Check container is running
+                CONTAINER_STATE=$(docker inspect "servercompass-go-gin-demo-staging-app" --format='{{.State.Status}}' 2>/dev/null || echo "notfound")
+                if [ "$CONTAINER_STATE" = "running" ]; then
+                  # TCP port probe inside container
+                  PORT_OPEN=$(docker exec "servercompass-go-gin-demo-staging-app" sh -c "nc -z localhost $APP_PORT 2>/dev/null && echo open || echo closed" 2>/dev/null || echo "closed")
+                  if [ "$PORT_OPEN" = "open" ]; then
+                    STAGING_READY="yes"
+                    echo "  ✓ Staging container ready after ${i}s"
+                    break
+                  fi
+                elif [ "$CONTAINER_STATE" = "exited" ] || [ "$CONTAINER_STATE" = "dead" ]; then
+                  echo "  ✗ Staging container crashed!"
+                  docker logs "servercompass-go-gin-demo-staging-app" --tail 20 2>&1 || true
+                  break
+                fi
+                echo "  ... waiting (${i}/30s) - state: $CONTAINER_STATE"
+                sleep 1
+              done
+
+              if [ "$STAGING_READY" = "yes" ]; then
+                # Step 6: Create Traefik dynamic config to route traffic to staging
+                echo "🔀 Switching Traefik traffic to staging..."
+
+                # Extract domain from Traefik labels
+                DOMAIN=$(echo "$EXISTING_LABELS" | grep -oP 'Host\(`\K[^`]+' | head -1)
+                if [ -n "$DOMAIN" ]; then
+                  # Create Traefik file provider config for traffic switch
+                  TRAEFIK_DYNAMIC_DIR="/opt/traefik/dynamic"
+                  mkdir -p "$TRAEFIK_DYNAMIC_DIR"
+
+                  cat > "$TRAEFIK_DYNAMIC_DIR/servercompass-go-gin-demo-switch.yml" << TRAEFIKEOF
+            http:
+              services:
+                servercompass-go-gin-demo-staging:
+                  loadBalancer:
+                    servers:
+                      - url: "http://servercompass-go-gin-demo-staging-app:$APP_PORT"
+              routers:
+                servercompass-go-gin-demo-switch:
+                  rule: "Host(\`$DOMAIN\`)"
+                  service: "servercompass-go-gin-demo-staging"
+                  entryPoints:
+                    - websecure
+                  tls:
+                    certResolver: letsencrypt
+            TRAEFIKEOF
+
+                  echo "  ✓ Traffic switched to staging via Traefik file provider"
+                  sleep 2  # Give Traefik time to pick up the config
+
+                  # Step 7: Post-switch verification (5 probes over 15 seconds)
+                  echo "🔍 Verifying staging is healthy after traffic switch..."
+                  VERIFICATION_PASSED="yes"
+                  CONSECUTIVE_FAILURES=0
+                  for probe in $(seq 1 5); do
+                    sleep 3
+                    PROBE_RESULT=$(docker exec "servercompass-go-gin-demo-staging-app" sh -c "nc -z localhost $APP_PORT 2>/dev/null && echo ok || echo fail" 2>/dev/null || echo "fail")
+                    if [ "$PROBE_RESULT" = "ok" ]; then
+                      echo "  ✓ Probe $probe/5: OK"
+                      CONSECUTIVE_FAILURES=0
+                    else
+                      echo "  ✗ Probe $probe/5: FAILED"
+                      CONSECUTIVE_FAILURES=$((CONSECUTIVE_FAILURES + 1))
+                      if [ $CONSECUTIVE_FAILURES -ge 2 ]; then
+                        VERIFICATION_PASSED="no"
+                        break
+                      fi
+                    fi
+                  done
+
+                  if [ "$VERIFICATION_PASSED" = "yes" ]; then
+                    # Step 8: Verification passed - stop primary and promote staging
+                    echo "✅ Verification passed! Promoting staging to primary..."
+
+                    # Stop primary
+                    cd /root/server-compass/apps/servercompass-go-gin-demo
+                    docker compose -p "$PRIMARY_PROJECT" down || true
+
+                    # Stop staging
+                    cd "$STAGING_DIR"
+                    docker compose -p "$STAGING_PROJECT" down || true
+
+                    # Start as primary
+                    cd /root/server-compass/apps/servercompass-go-gin-demo
+                    docker compose -p "$PRIMARY_PROJECT" up -d
+
+                    # Remove Traefik switch config (back to label-based routing)
+                    rm -f "$TRAEFIK_DYNAMIC_DIR/servercompass-go-gin-demo-switch.yml"
+
+                    # Cleanup staging directory
+                    rm -rf "$STAGING_DIR"
+
+                    echo "🎉 Zero-downtime deployment completed successfully!"
+                  else
+                    # Step 8b: Verification failed - rollback to primary
+                    echo "❌ Verification failed! Rolling back to primary..."
+
+                    # Remove Traefik switch config (traffic goes back to primary via labels)
+                    rm -f "$TRAEFIK_DYNAMIC_DIR/servercompass-go-gin-demo-switch.yml"
+
+                    # Stop staging
+                    cd "$STAGING_DIR"
+                    docker compose -p "$STAGING_PROJECT" down --remove-orphans || true
+                    rm -rf "$STAGING_DIR"
+
+                    echo "⚠️ Rollback complete - primary is still running (no downtime occurred)"
+                    exit 1
+                  fi
+                else
+                  echo "⚠️ Could not extract domain from Traefik labels, falling back to standard deployment"
+                  # Cleanup staging
+                  cd "$STAGING_DIR" && docker compose -p "$STAGING_PROJECT" down --remove-orphans 2>/dev/null || true
+                  rm -rf "$STAGING_DIR"
+                  cd /root/server-compass/apps/servercompass-go-gin-demo
+                  # Fall through to standard deployment
+                  HAS_TRAEFIK_LABELS="no"
+                fi
+              else
+                # Staging failed to start - cleanup and exit
+                echo "❌ Staging container failed to become ready"
+                cd "$STAGING_DIR" && docker compose -p "$STAGING_PROJECT" down --remove-orphans 2>/dev/null || true
+                rm -rf "$STAGING_DIR"
+                echo "⚠️ Primary is still running (no changes made)"
+                exit 1
+              fi
+            fi
+
+            # Standard deployment (no Traefik or fallback)
+            if [ "$HAS_TRAEFIK_LABELS" != "yes" ]; then
+              echo "🚀 Starting standard deployment..."
+
+              # Stop and remove old containers
+              echo "🛑 Stopping old containers..."
+              docker compose down
+
+              # Start new containers
+              echo "🚀 Starting new containers..."
+              docker compose up -d
+            fi
 
             # Cleanup old images
             echo "🧹 Cleaning up old images..."
